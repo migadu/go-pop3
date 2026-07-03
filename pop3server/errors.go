@@ -16,6 +16,13 @@ import (
 // Close set to true instead.
 var ErrCloseConnection = errors.New("pop3server: close connection")
 
+// ErrSilentReject may be returned (or wrapped) by Options.NewSession to reject
+// a connection without writing any response: the connection is closed
+// immediately, before the greeting. Use it for abuse-control rejections
+// (per-IP connection limits, blocklists) where emitting a banner would inform
+// or reward the abuser; return any other error to reject with an -ERR banner.
+var ErrSilentReject = errors.New("pop3server: silently reject connection")
+
 // Error is a Session error whose response is sent verbatim to the client and
 // which can request connection closure. Unlike a plain error (whose text is
 // forwarded as-is), an *Error gives the session explicit control over the

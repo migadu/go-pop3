@@ -148,6 +148,11 @@ func (s *Server) newWriter(conn net.Conn) *bufio.Writer {
 	return bufio.NewWriter(conn)
 }
 
+// ServeConn runs the POP3 command loop on a single connection.
+func (s *Server) ServeConn(netConn net.Conn) {
+	s.handleConn(netConn)
+}
+
 // handleConn sets up a Conn and runs the command loop.
 func (s *Server) handleConn(netConn net.Conn) {
 	var ctx context.Context
@@ -178,6 +183,15 @@ func (s *Server) handleConn(netConn net.Conn) {
 	// Create the session via the consumer's callback.
 	session, err := s.opts.NewSession(c)
 	if err != nil {
+		// A silent rejection closes the socket without any banner (abuse
+		// control: don't inform the peer it is being limited).
+		if errors.Is(err, ErrSilentReject) {
+			s.opts.Logger.Debug("POP3: connection silently rejected",
+				"remote", netConn.RemoteAddr(), "error", err)
+			netConn.Close()
+			cancel()
+			return
+		}
 		s.opts.Logger.Warn("POP3: session creation failed",
 			"remote", netConn.RemoteAddr(), "error", err)
 		// A limiter can steer the rejection banner by returning an *Error,

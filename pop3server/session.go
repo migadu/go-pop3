@@ -140,6 +140,8 @@ type SessionSASL interface {
 }
 
 // SessionLang may be implemented to support the LANG extension (RFC 6856).
+// LANG is valid in both the AUTHORIZATION and TRANSACTION states (RFC 6856 §3),
+// so these methods may be called before authentication.
 type SessionLang interface {
 	Session
 
@@ -163,5 +165,8 @@ type SessionUTF8 interface {
 
 	// EnableUTF8 enables UTF-8 mode for the session. After this call,
 	// the server accepts and returns UTF-8 encoded headers.
+	//
+	// Per RFC 6856 §2 the UTF8 command is only valid in the AUTHORIZATION
+	// state, so this is called before Login/AuthenticatePlain succeeds.
 	EnableUTF8(ctx context.Context) error
 }

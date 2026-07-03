@@ -167,7 +167,7 @@ func (c *Conn) serve() {
 					opts.Logger.Info("POP3: absolute session timeout",
 						"duration", time.Since(c.startTime))
 				} else {
-					c.err("Connection timed out due to inactivity")
+					c.err("Idle timeout, connection timed out")
 					c.writer.Flush()
 					opts.Logger.Info("POP3: connection timed out")
 				}
@@ -301,8 +301,18 @@ func (c *Conn) dispatchAuth(ctx context.Context, cmd string, args []string) bool
 	case "QUIT":
 		c.ok("Goodbye")
 		return true
-	case "NOOP":
-		c.ok("")
+	case "UTF8":
+		// RFC 6856 §2: the UTF8 command is only valid in the AUTHORIZATION
+		// state (it must precede the credentials it applies to).
+		c.handleUTF8(ctx)
+	case "LANG":
+		// RFC 6856 §3: LANG is valid in both AUTHORIZATION and TRANSACTION.
+		c.handleLang(ctx, args)
+	case "STAT", "LIST", "UIDL", "RETR", "TOP", "DELE", "RSET", "NOOP":
+		// TRANSACTION-state commands before authentication (RFC 1939 §5; NOOP
+		// is TRANSACTION-only per §5 as well). A known verb in the wrong state
+		// is a client protocol error, not an unknown command.
+		c.clientError("Not authenticated")
 	case "LAST":
 		// LAST is obsolete (RFC 1081, removed in RFC 1939). Legacy clients
 		// probe for it; reject without counting as an error.
@@ -340,7 +350,8 @@ func (c *Conn) dispatchTransaction(ctx context.Context, cmd string, args []strin
 	case "LANG":
 		c.handleLang(ctx, args)
 	case "UTF8":
-		c.handleUTF8(ctx)
+		// RFC 6856 §2: UTF8 is only valid in the AUTHORIZATION state.
+		c.clientError("UTF8 only allowed before authentication")
 	case "LAST":
 		c.err("LAST is obsolete (RFC 1939)")
 	default:
@@ -427,6 +438,13 @@ func (c *Conn) handleUser(args []string) {
 	}
 	if len(args) < 1 {
 		c.clientError("Syntax: USER <username>")
+		return
+	}
+	// Control characters (including NUL) are invalid in POP3 arguments
+	// (RFC 1939 §3) and would corrupt downstream credential frames a consumer
+	// builds from the username (e.g. a proxy's SASL PLAIN re-authentication).
+	if containsCTL(args[0]) {
+		c.clientError("Invalid username")
 		return
 	}
 	c.username = args[0]
@@ -570,6 +588,16 @@ func (c *Conn) handleSTLS(ctx context.Context) {
 		return
 	}
 
+	// Reject plaintext bytes pipelined after STLS: they would either be lost
+	// (a ClientHello buffered here never reaches the handshake below) or, in
+	// the response-injection case, attacker-supplied plaintext smuggled ahead
+	// of the TLS upgrade. The client must wait for +OK before negotiating.
+	if c.reader.Buffered() > 0 {
+		c.clientError("Pipelining after STLS not permitted")
+		c.closePending = true
+		return
+	}
+
 	c.ok("Begin TLS negotiation")
 	c.writer.Flush()
 
@@ -675,7 +703,13 @@ func (c *Conn) handleRetr(ctx context.Context, args []string) {
 	}
 	defer body.Close()
 
-	c.ok("Message follows")
+	// Announce the exact octet count when the session provided one via
+	// SizedBody; byte-counting clients use it to track download progress.
+	if sb, ok := body.(*sizedBody); ok {
+		c.ok(fmt.Sprintf("%d octets", sb.octets))
+	} else {
+		c.ok("Message follows")
+	}
 	c.writer.Flush()
 
 	dsw := newDotStuffWriter(c.writer)
@@ -1045,7 +1079,24 @@ func decodeSASLPlain(encoded string) (identity, username, password string, err e
 	if len(parts) != 3 {
 		return "", "", "", errors.New("invalid SASL PLAIN format")
 	}
+	// Identities carrying control characters would corrupt downstream
+	// credential frames rebuilt from them (see handleUser); the password is
+	// already framed by the NUL separators and is not checked.
+	if containsCTL(parts[0]) || containsCTL(parts[1]) {
+		return "", "", "", errors.New("control characters in SASL PLAIN identity")
+	}
 	return parts[0], parts[1], parts[2], nil
+}
+
+// containsCTL reports whether s contains ASCII control characters (including
+// NUL and DEL), which are invalid in POP3 command arguments (RFC 1939 §3).
+func containsCTL(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7F {
+			return true
+		}
+	}
+	return false
 }
 
 func splitNull(data []byte) []string {

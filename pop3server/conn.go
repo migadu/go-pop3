@@ -171,6 +171,11 @@ func (c *Conn) serve() {
 					c.writer.Flush()
 					opts.Logger.Info("POP3: connection timed out")
 				}
+			} else if errors.Is(err, errLineTooLong) {
+				// Courtesy response before dropping: the oversized line was
+				// not drained, so resuming the parser is not safe.
+				c.err("Line too long")
+				c.writer.Flush()
 			}
 			return
 		}
@@ -469,10 +474,13 @@ func (c *Conn) handlePass(ctx context.Context) {
 	}
 
 	if err := c.session.Login(ctx, c.username, password); err != nil {
-		c.errorCount++
+		if !c.server.opts.AuthFailuresExemptFromMaxErrors {
+			c.errorCount++
+		}
 		c.applyErrorDelay()
 		c.sessionError(err)
-		c.username = "" // reset for retry
+		// The username is retained so the client may retry with a bare PASS
+		// (RFC 1939 permits either; retaining matches common server behavior).
 		return
 	}
 
@@ -558,7 +566,9 @@ func (c *Conn) handleAuth(ctx context.Context, args []string) {
 	}
 
 	if err := sasl.AuthenticatePlain(ctx, identity, username, password); err != nil {
-		c.errorCount++
+		if !c.server.opts.AuthFailuresExemptFromMaxErrors {
+			c.errorCount++
+		}
 		c.applyErrorDelay()
 		c.sessionError(err)
 		return
@@ -626,6 +636,11 @@ func (c *Conn) handleSTLS(ctx context.Context) {
 	c.reader = bufio.NewReader(tlsConn)
 	c.writer = c.server.newWriter(tlsConn)
 	c.isTLS = true
+
+	// RFC 2595 §4: the server MUST discard knowledge obtained from the client
+	// prior to the TLS negotiation. A USER sent over plaintext (possible only
+	// with InsecureAuth) must not pair with a post-upgrade PASS.
+	c.username = ""
 }
 
 func (c *Conn) handleStat(ctx context.Context) {
@@ -650,8 +665,15 @@ func (c *Conn) handleList(ctx context.Context, args []string) {
 		return
 	}
 
-	if msg > 0 && len(items) == 1 {
-		// Single-message response
+	if msg > 0 {
+		// A single-message query gets a single-line response. A Session that
+		// returns anything but exactly one item here has violated the
+		// contract; emitting the multi-line form instead would desync the
+		// client's framing (it wouldn't consume the ".\r\n"), so fail closed.
+		if len(items) != 1 {
+			c.sessionError(&Error{Message: "No such message"})
+			return
+		}
 		fmt.Fprintf(c.writer, "+OK %d %d\r\n", items[0].Num, items[0].Size)
 		return
 	}
@@ -677,7 +699,13 @@ func (c *Conn) handleUidl(ctx context.Context, args []string) {
 		return
 	}
 
-	if msg > 0 && len(items) == 1 {
+	if msg > 0 {
+		// Same contract enforcement as handleList: never answer a
+		// single-message query with a multi-line response.
+		if len(items) != 1 {
+			c.sessionError(&Error{Message: "No such message"})
+			return
+		}
 		c.writer.WriteString(fmt.Sprintf("+OK %d %s\r\n", items[0].Num, sanitizeResponse(items[0].UniqueID)))
 		return
 	}
@@ -714,7 +742,14 @@ func (c *Conn) handleRetr(ctx context.Context, args []string) {
 
 	dsw := newDotStuffWriter(c.writer)
 	if _, copyErr := io.Copy(dsw, body); copyErr != nil {
-		// Connection error during transmission — can't send -ERR.
+		// The +OK line is already on the wire, so no -ERR can follow — and a
+		// body READ error leaves the multiline response unterminated on an
+		// otherwise healthy connection, where anything written next would be
+		// parsed as message content. The only safe move is to drop the
+		// connection (a connection write error ends up here too; closing is
+		// equally correct then).
+		c.lastErr = copyErr
+		c.closePending = true
 		return
 	}
 	dsw.Close()
@@ -750,6 +785,10 @@ func (c *Conn) handleTop(ctx context.Context, args []string) {
 
 	dsw := newDotStuffWriter(c.writer)
 	if _, copyErr := io.Copy(dsw, body); copyErr != nil {
+		// Same as handleRetr: the multiline response is unterminated, so the
+		// connection must be dropped rather than resumed.
+		c.lastErr = copyErr
+		c.closePending = true
 		return
 	}
 	dsw.Close()
@@ -878,6 +917,12 @@ func (c *Conn) err(msg string) {
 // be fatal signals it with *Error{Close: true} or ErrCloseConnection.
 func (c *Conn) clientError(msg string) {
 	c.errorCount++
+	// Surface the error to the OnCommand hook (unless the handler already
+	// recorded a more specific one) so protocol errors the library detects
+	// are not reported as successful commands.
+	if c.lastErr == nil {
+		c.lastErr = &Error{Message: msg}
+	}
 	c.applyErrorDelay()
 	c.err(msg)
 }
@@ -923,6 +968,12 @@ func (c *Conn) sessionError(err error) {
 
 // --- Internal helpers ---
 
+// errLineTooLong is returned by readLine when a line exceeds MaxLineLength.
+// The command loop sends a courtesy "-ERR Line too long" before dropping the
+// connection (the remainder of the oversized line is not drained, so the
+// parser cannot safely resume).
+var errLineTooLong = errors.New("line too long")
+
 func (c *Conn) readLine() (string, error) {
 	maxLen := c.server.opts.MaxLineLength
 	var line []byte
@@ -936,11 +987,11 @@ func (c *Conn) readLine() (string, error) {
 			break
 		}
 		if len(line) > maxLen {
-			return "", errors.New("line too long")
+			return "", errLineTooLong
 		}
 	}
 	if len(line) > maxLen {
-		return "", errors.New("line too long")
+		return "", errLineTooLong
 	}
 	return string(line), nil
 }

@@ -87,17 +87,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					stack := debug.Stack()
-					s.opts.Logger.Error("POP3: panic in connection handler",
-						"panic", r, "remote", conn.RemoteAddr())
-					if h := s.opts.OnPanic; h != nil {
-						h(r, stack)
-					}
-					conn.Close()
-				}
-			}()
+			defer s.recoverConn(conn)
 			s.handleConn(conn)
 		}()
 	}
@@ -148,9 +138,28 @@ func (s *Server) newWriter(conn net.Conn) *bufio.Writer {
 	return bufio.NewWriter(conn)
 }
 
-// ServeConn runs the POP3 command loop on a single connection.
+// ServeConn runs the POP3 command loop on a single connection. The caller
+// owns the listener; panics are recovered exactly as in Serve (logged,
+// reported via OnPanic, connection closed).
 func (s *Server) ServeConn(netConn net.Conn) {
+	defer s.recoverConn(netConn)
 	s.handleConn(netConn)
+}
+
+// recoverConn is the shared per-connection panic handler for Serve and
+// ServeConn. It must be invoked directly by a defer so recover() applies to
+// the panicking goroutine. Closing the connection here also covers a panic
+// inside the NewSession callback, before any session teardown exists.
+func (s *Server) recoverConn(conn net.Conn) {
+	if r := recover(); r != nil {
+		stack := debug.Stack()
+		s.opts.Logger.Error("POP3: panic in connection handler",
+			"panic", r, "remote", conn.RemoteAddr())
+		if h := s.opts.OnPanic; h != nil {
+			h(r, stack)
+		}
+		conn.Close()
+	}
 }
 
 // handleConn sets up a Conn and runs the command loop.

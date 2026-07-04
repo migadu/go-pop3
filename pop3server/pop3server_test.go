@@ -147,6 +147,134 @@ func TestDotStuffWriter_TrailingBareCR_SplitWrites(t *testing.T) {
 	}
 }
 
+func TestDotStuffWriter_BareCRContent(t *testing.T) {
+	// A lone CR (not followed by LF) is message content, not a line
+	// terminator: it passes through verbatim, does not break the line, and
+	// does not make a following '.' eligible for stuffing. (Treating it as a
+	// line break would silently rewrite the message and desync the octet
+	// count announced from len(body) + bare-LF count.)
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"mid-line bare CR verbatim", "a\rb\r\n", "a\rb\r\n.\r\n"},
+		{"dot after bare CR not stuffed", "a\r.b\r\n", "a\r.b\r\n.\r\n"},
+		{"CR CR LF keeps inner CR", "x\r\r\n", "x\r\r\n.\r\n"},
+		{"stuffed dot then bare CR", ".\rrest\r\n", "..\rrest\r\n.\r\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			w := newDotStuffWriter(&buf)
+			w.Write([]byte(tt.input))
+			w.Close()
+			if got := buf.String(); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// crlfNormalizedLenRef mirrors the octet count an embedding server announces
+// for RETR (RFC 1939 §5): len(body) plus one per bare LF; lone CRs unchanged.
+func crlfNormalizedLenRef(body []byte) int {
+	n := len(body)
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\n' && (i == 0 || body[i-1] != '\r') {
+			n++
+		}
+	}
+	return n
+}
+
+// crlfNormalizeRef is the reference CRLF normalisation: bare LF becomes CRLF,
+// every other byte (including lone CRs) is preserved.
+func crlfNormalizeRef(body string) string {
+	var b bytes.Buffer
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\n' && (i == 0 || body[i-1] != '\r') {
+			b.WriteByte('\r')
+		}
+		b.WriteByte(body[i])
+	}
+	return b.String()
+}
+
+// unstuffRef undoes byte-stuffing the way a client does (RFC 1939 §3): the
+// first octet of any line beginning with '.' is removed.
+func unstuffRef(payload []byte) []byte {
+	lines := bytes.Split(payload, []byte("\r\n"))
+	for i, ln := range lines {
+		if len(ln) > 0 && ln[0] == '.' {
+			lines[i] = ln[1:]
+		}
+	}
+	return bytes.Join(lines, []byte("\r\n"))
+}
+
+// TestDotStuffWriter_OctetInvariant pins the property RETR sizing depends on:
+// after un-stuffing, the streamed payload is exactly the CRLF-normalised body
+// (len(body) + one per bare LF octets), plus the line completion Close adds
+// when the body does not end in a newline. An embedding server can therefore
+// announce the octet count without transforming the body first.
+func TestDotStuffWriter_OctetInvariant(t *testing.T) {
+	bodies := []string{
+		"",
+		"simple\r\n",
+		"bare\nlf\n",
+		"mixed\r\nbare\nend\r\n",
+		".dot\r\n..double\r\n.\r\n",
+		"mid.line.dots and trailing.dot.\r\n",
+		"bare\rcr content\r\n",
+		"a\r.b\r\n",
+		"a\rb",
+		"x\r",
+		"\r\r\n",
+		"crcr\r\r\nnext\r\n",
+		"no trailing newline",
+		".\n",
+		"\n",
+	}
+	for _, body := range bodies {
+		var buf bytes.Buffer
+		w := newDotStuffWriter(&buf)
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatalf("body %q: write: %v", body, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("body %q: close: %v", body, err)
+		}
+		out := buf.Bytes()
+		if !bytes.HasSuffix(out, []byte(".\r\n")) {
+			t.Fatalf("body %q: missing terminator in %q", body, out)
+		}
+		payload := out[:len(out)-3]
+		got := unstuffRef(payload)
+
+		want := crlfNormalizeRef(body)
+		completion := 0
+		switch {
+		case body == "" || bytes.HasSuffix([]byte(body), []byte("\n")):
+			// already line-terminated (or empty): nothing added
+		case bytes.HasSuffix([]byte(body), []byte("\r")):
+			want += "\n" // trailing bare CR completed to a single CRLF
+			completion = 1
+		default:
+			want += "\r\n"
+			completion = 2
+		}
+
+		if string(got) != want {
+			t.Errorf("body %q: reconstructed %q, want %q", body, got, want)
+		}
+		if len(got) != crlfNormalizedLenRef([]byte(body))+completion {
+			t.Errorf("body %q: reconstructed %d octets, announced %d + completion %d",
+				body, len(got), crlfNormalizedLenRef([]byte(body)), completion)
+		}
+	}
+}
+
 func TestDecodeSASLPlain(t *testing.T) {
 	tests := []struct {
 		name     string

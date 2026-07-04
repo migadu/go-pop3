@@ -118,6 +118,16 @@ type Options struct {
 	// connection returns &Error{Close: true} (or wraps ErrCloseConnection).
 	MaxErrors int
 
+	// AuthFailuresExemptFromMaxErrors, when true, keeps failed Login /
+	// AuthenticatePlain attempts from counting toward MaxErrors (the
+	// progressive ErrorDelay still applies, and malformed AUTH payloads still
+	// count). Embedders whose Session already enforces authentication rate
+	// limiting (progressive delays, IP blocking) can set this so a small
+	// MaxErrors budget for protocol errors does not disconnect a legitimate
+	// user who mistypes a password a couple of times. Default: false (failed
+	// authentications count).
+	AuthFailuresExemptFromMaxErrors bool
+
 	// ErrorDelay is the base delay applied after a client error (bad
 	// login, invalid command). The actual delay is errorCount * ErrorDelay,
 	// capped by MaxErrorDelay, and is interruptible by connection shutdown.

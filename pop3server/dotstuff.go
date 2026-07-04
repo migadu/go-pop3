@@ -10,6 +10,13 @@ import (
 // message bodies (RETR, TOP) to the client without materialising the entire
 // body in memory.
 //
+// Only LF is treated as a line terminator: a bare LF is normalised to CRLF
+// (one extra output octet), while a lone CR (not followed by LF) is message
+// content and passes through verbatim — it neither breaks the line nor makes
+// a following '.' eligible for stuffing. This keeps the output size exactly
+// len(body) + count(bare LFs), so an embedding server can announce the octet
+// count without transforming the body first.
+//
 // Usage:
 //
 //	dsw := newDotStuffWriter(conn)
@@ -56,25 +63,15 @@ func (d *dotStuffWriter) Write(p []byte) (int, error) {
 			d.atLineStart = true
 
 		case b == '\r':
-			// Write the \r but don't mark line start yet — wait
-			// for the following \n (or lack thereof).
+			// Write the \r but don't mark line start yet — if the next
+			// byte is '\n' this is a CRLF pair; otherwise it was a lone
+			// CR, which is content, not a line terminator.
 			if _, err := d.w.Write([]byte{'\r'}); err != nil {
 				return i, err
 			}
-			// If the previous byte was also '\r' (bare CR), that
-			// was a line by itself; the current \r starts fresh.
 			d.atLineStart = false
 
 		default:
-			// If the last byte was '\r' but this byte is not '\n',
-			// we had a bare CR — emit a LF to normalise it.
-			if d.lastByte == '\r' && b != '\n' {
-				if _, err := d.w.Write([]byte{'\n'}); err != nil {
-					return i, err
-				}
-				d.atLineStart = true
-			}
-
 			// Dot-stuff: if we're at line start and the byte is '.', prepend '.'.
 			if d.atLineStart && b == '.' {
 				if _, err := d.w.Write([]byte{'.'}); err != nil {

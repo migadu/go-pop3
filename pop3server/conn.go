@@ -166,10 +166,16 @@ func (c *Conn) serve() {
 					c.writer.Flush()
 					opts.Logger.Info("POP3: absolute session timeout",
 						"duration", time.Since(c.startTime))
+					if h := opts.OnTimeout; h != nil {
+						h(TimeoutAbsolute)
+					}
 				} else {
 					c.err("Idle timeout, connection timed out")
 					c.writer.Flush()
 					opts.Logger.Info("POP3: connection timed out")
+					if h := opts.OnTimeout; h != nil {
+						h(TimeoutIdle)
+					}
 				}
 			} else if errors.Is(err, errLineTooLong) {
 				// Courtesy response before dropping: the oversized line was

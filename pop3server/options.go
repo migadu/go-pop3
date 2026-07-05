@@ -21,6 +21,15 @@ const defaultMaxErrorDelay = 30 * time.Second
 // a stalled (non-reading) client cannot wedge a streamed RETR/TOP forever.
 const defaultWriteTimeout = 60 * time.Second
 
+// Timeout kinds reported to Options.OnTimeout.
+const (
+	// TimeoutIdle: no client command arrived within IdleTimeout (or
+	// AuthIdleTimeout during the AUTHORIZATION state).
+	TimeoutIdle = "idle"
+	// TimeoutAbsolute: the session exceeded AbsoluteSessionTimeout.
+	TimeoutAbsolute = "absolute"
+)
+
 // Options configures a POP3 server.
 type Options struct {
 	// NewSession is called for each new connection. The Conn provides
@@ -178,6 +187,18 @@ type Options struct {
 	// handler goroutine, with the recovered value and the stack. The library
 	// always logs the panic and closes the connection regardless.
 	OnPanic func(recovered any, stack []byte)
+
+	// OnTimeout, if set, is called exactly once when the server disconnects
+	// a client because a connection-level timer expired: TimeoutIdle when no
+	// command arrived within IdleTimeout (or AuthIdleTimeout pre-auth),
+	// TimeoutAbsolute when the session exceeded AbsoluteSessionTimeout. It
+	// fires after the "-ERR" notice is written and before the connection
+	// closes. Intended for metrics; keep it fast and non-blocking. The
+	// library owns these timers, so an embedder that also wraps the
+	// net.Conn in its own idle checker should disarm that checker and count
+	// disconnects from this hook instead — two owners of the same timer race
+	// each other and can send the client a duplicate notice.
+	OnTimeout func(kind string)
 
 	// Logger is the structured logger. If nil, slog.Default() is used.
 	Logger *slog.Logger

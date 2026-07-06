@@ -64,6 +64,16 @@ type Options struct {
 	// AUTH-RESP-CODE, IMPLEMENTATION).
 	Caps []pop3.Capability
 
+	// SuppressedCaps lists capability names (case-insensitive) to omit from
+	// the CAPA response even when the library would advertise them. The
+	// commands themselves remain functional — only the advertisement is
+	// hidden. A proxy fronting a mixed backend fleet uses this to hide UTF8
+	// and LANG: classic Outlook sends UTF8 *after* authentication whenever it
+	// appears in CAPA (violating RFC 6856 §2, which restricts the command to
+	// the AUTHORIZATION state) and aborts the whole mail download when the
+	// post-auth relay target rejects it.
+	SuppressedCaps []string
+
 	// IdleTimeout is the maximum time the server waits for a command
 	// from the client before disconnecting. RFC 1939 §3 mandates at
 	// least 10 minutes ("auto-logout timer"). Default: 10 minutes.

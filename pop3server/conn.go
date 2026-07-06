@@ -361,8 +361,13 @@ func (c *Conn) dispatchTransaction(ctx context.Context, cmd string, args []strin
 	case "LANG":
 		c.handleLang(ctx, args)
 	case "UTF8":
-		// RFC 6856 §2: UTF8 is only valid in the AUTHORIZATION state.
-		c.clientError("UTF8 only allowed before authentication")
+		// RFC 6856 §2 restricts UTF8 to the AUTHORIZATION state, but classic
+		// Outlook sends it right after PASS whenever CAPA advertised it, and
+		// treats the -ERR as a fatal server error (0x800CCC90): it drops the
+		// connection and fails the whole download. Large providers accept the
+		// post-auth form for the same reason, so accept it here too — enabling
+		// UTF-8 mid-session only widens what the responses may carry.
+		c.handleUTF8(ctx)
 	case "LAST":
 		c.err("LAST is obsolete (RFC 1939)")
 	default:
@@ -388,22 +393,47 @@ func (c *Conn) dispatchUnknown(ctx context.Context, cmd string, args []string) b
 
 // --- Command handlers ---
 
+// capSuppressed reports whether a capability name is listed in
+// Options.SuppressedCaps (case-insensitive). Suppression hides the
+// advertisement only; the command stays functional.
+func (c *Conn) capSuppressed(name string) bool {
+	for _, s := range c.server.opts.SuppressedCaps {
+		if strings.EqualFold(s, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeCap writes one capability line unless the name is suppressed.
+func (c *Conn) writeCap(name string, params ...string) {
+	if c.capSuppressed(name) {
+		return
+	}
+	c.writer.WriteString(name)
+	if len(params) > 0 {
+		c.writer.WriteString(" ")
+		c.writer.WriteString(strings.Join(params, " "))
+	}
+	c.writer.WriteString("\r\n")
+}
+
 func (c *Conn) handleCapa() {
 	opts := c.server.opts
 	authAllowed := opts.InsecureAuth || c.isTLS
 
 	c.writer.WriteString("+OK Capability list follows\r\n")
-	c.writer.WriteString("TOP\r\n")
-	c.writer.WriteString("UIDL\r\n")
+	c.writeCap("TOP")
+	c.writeCap("UIDL")
 	if authAllowed {
-		c.writer.WriteString("USER\r\n")
+		c.writeCap("USER")
 	}
-	c.writer.WriteString("RESP-CODES\r\n")
-	c.writer.WriteString("PIPELINING\r\n")
+	c.writeCap("RESP-CODES")
+	c.writeCap("PIPELINING")
 
 	// STLS: only advertise when TLS is available and we're not already on TLS
 	if opts.TLSConfig != nil && !c.isTLS {
-		c.writer.WriteString("STLS\r\n")
+		c.writeCap("STLS")
 	}
 
 	// SASL: advertise if the session supports it and auth is allowed
@@ -411,32 +441,22 @@ func (c *Conn) handleCapa() {
 		if sasl, ok := c.session.(SessionSASL); ok {
 			mechs := sasl.AuthenticateMechanisms()
 			if len(mechs) > 0 {
-				c.writer.WriteString("SASL ")
-				c.writer.WriteString(strings.Join(mechs, " "))
-				c.writer.WriteString("\r\n")
+				c.writeCap("SASL", mechs...)
 			}
 		}
 	}
 
 	// LANG / UTF8
 	if _, ok := c.session.(SessionLang); ok {
-		c.writer.WriteString("LANG\r\n")
+		c.writeCap("LANG")
 	}
 	if _, ok := c.session.(SessionUTF8); ok {
-		c.writer.WriteString("UTF8\r\n")
+		c.writeCap("UTF8")
 	}
 
 	// Custom capabilities from server options
 	for _, cap := range opts.Caps {
-		if len(cap.Params) > 0 {
-			c.writer.WriteString(cap.Name)
-			c.writer.WriteString(" ")
-			c.writer.WriteString(strings.Join(cap.Params, " "))
-			c.writer.WriteString("\r\n")
-		} else {
-			c.writer.WriteString(cap.Name)
-			c.writer.WriteString("\r\n")
-		}
+		c.writeCap(cap.Name, cap.Params...)
 	}
 
 	c.writer.WriteString(".\r\n")

@@ -166,7 +166,10 @@ type SessionUTF8 interface {
 	// EnableUTF8 enables UTF-8 mode for the session. After this call,
 	// the server accepts and returns UTF-8 encoded headers.
 	//
-	// Per RFC 6856 §2 the UTF8 command is only valid in the AUTHORIZATION
-	// state, so this is called before Login/AuthenticatePlain succeeds.
+	// RFC 6856 §2 restricts the UTF8 command to the AUTHORIZATION state,
+	// but the library also accepts it in the TRANSACTION state because
+	// classic Outlook sends it right after PASS and aborts the download on
+	// -ERR. Implementations must therefore tolerate this being called both
+	// before and after Login/AuthenticatePlain.
 	EnableUTF8(ctx context.Context) error
 }

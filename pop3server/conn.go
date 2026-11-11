@@ -634,6 +634,10 @@ func (c *Conn) handleSTLS(ctx context.Context) {
 		return
 	}
 
+	plainConn := c.netConn
+	if h := opts.OnStartTLS; h != nil {
+		h(plainConn)
+	}
 	c.ok("Begin TLS negotiation")
 	c.writer.Flush()
 
@@ -667,6 +671,9 @@ func (c *Conn) handleSTLS(ctx context.Context) {
 	// prior to the TLS negotiation. A USER sent over plaintext (possible only
 	// with InsecureAuth) must not pair with a post-upgrade PASS.
 	c.username = ""
+	if h := opts.OnTLSHandshakeComplete; h != nil {
+		h(plainConn, tlsConn)
+	}
 }
 
 func (c *Conn) handleStat(ctx context.Context) {

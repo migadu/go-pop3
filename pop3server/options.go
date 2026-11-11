@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/migadu/go-pop3/pop3"
@@ -47,6 +48,27 @@ type Options struct {
 	//     the library handles the TLS upgrade when the client sends STLS.
 	// If nil, TLS is not available and STLS is not advertised.
 	TLSConfig *tls.Config
+
+	// OnStartTLS, if set, runs synchronously on the connection's command
+	// goroutine after all STLS rejection checks and immediately before the
+	// positive response is written and flushed. conn is the plaintext
+	// transport that the TLS connection will wrap. An embedder can use this
+	// hook to withhold asynchronous plaintext notices before the client is
+	// told to start TLS. The hook must return promptly and must not read or
+	// write conn. It does not run for rejected STLS commands or implicit TLS.
+	// A later response-write or TLS-handshake failure does not undo the hook.
+	OnStartTLS func(conn net.Conn)
+
+	// OnTLSHandshakeComplete, if set, runs synchronously on the connection's
+	// command goroutine after a successful STLS handshake. The Conn's
+	// NetConn, reader and writer already use secure, IsTLS is true, and
+	// pre-TLS authentication state has been discarded. The hook
+	// returns before any post-TLS command or authentication is dispatched,
+	// including commands coalesced with the handshake. plain is the transport
+	// passed to OnStartTLS; secure wraps it. The hook must return promptly and
+	// must not read or write either connection. It does not run for rejected
+	// STLS commands, failed handshakes, or implicit TLS connections.
+	OnTLSHandshakeComplete func(plain net.Conn, secure *tls.Conn)
 
 	// Caps lists additional capabilities to advertise in the CAPA
 	// response. The library automatically adds:

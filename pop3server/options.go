@@ -39,7 +39,7 @@ type Options struct {
 	// server sends "-ERR <message>" and closes the connection. The message
 	// is Options.RejectMessage by default, or the wire message of a
 	// *pop3server.Error if the returned error is (or wraps) one — so a
-	// connection limiter can reply "-ERR [IN-USE] Too many connections".
+	// connection limiter can reply "-ERR [SYS/TEMP] Too many connections".
 	NewSession func(conn *Conn) (Session, error)
 
 	// TLSConfig enables TLS support. If non-nil:
@@ -111,7 +111,7 @@ type Options struct {
 
 	// AbsoluteSessionTimeout is the maximum total duration of a POP3
 	// session regardless of activity. When exceeded, the server sends
-	// "-ERR [IN-USE] Maximum session duration exceeded" and closes the
+	// "-ERR Maximum session duration exceeded" and closes the
 	// connection. This prevents indefinitely-held connections from
 	// monopolising server resources. Default: 0 (no absolute limit).
 	AbsoluteSessionTimeout time.Duration

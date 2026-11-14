@@ -344,12 +344,12 @@ func TestServer_RejectBannerFromError(t *testing.T) {
 	addr := serve(t, pop3server.Options{
 		InsecureAuth: true,
 		NewSession: func(*pop3server.Conn) (pop3server.Session, error) {
-			return nil, &pop3server.Error{Code: "IN-USE", Message: "Too many connections"}
+			return nil, &pop3server.Error{Code: "SYS/TEMP", Message: "Too many connections"}
 		},
 	})
 	_, r := rawDial(t, addr)
 	// Rejection happens before the greeting; first line is the banner.
-	if line := mustLine(t, r); line != "-ERR [IN-USE] Too many connections" {
+	if line := mustLine(t, r); line != "-ERR [SYS/TEMP] Too many connections" {
 		t.Fatalf("reject banner: got %q", line)
 	}
 }

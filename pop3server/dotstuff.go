@@ -1,6 +1,7 @@
 package pop3server
 
 import (
+	"bytes"
 	"io"
 )
 
@@ -25,6 +26,7 @@ import (
 type dotStuffWriter struct {
 	w           io.Writer
 	atLineStart bool // true when the next byte is at the start of a line
+	scratch     [1]byte
 	lastByte    byte // tracks the previous byte for CRLF normalisation
 }
 
@@ -45,19 +47,66 @@ func newDotStuffWriter(w io.Writer) *dotStuffWriter {
 // been written — so the io.Writer contract (n < len(p) implies a non-nil
 // error) holds.
 func (d *dotStuffWriter) Write(p []byte) (int, error) {
-	for i := 0; i < len(p); i++ {
+	vectorScan := true
+	for i := 0; i < len(p); {
 		b := p[i]
+		// Normal CRLF data can pass through unchanged, including multiple
+		// lines. Stop only at a bare LF or a dot needing an extra byte.
+		if b != '\n' && !(d.atLineStart && b == '.') {
+			end := i
+			// Skip validated vector blocks where supported; preserve the
+			// scalar handling of the first byte and all exceptional data.
+			if vectorScan && len(p)-i >= 32 {
+				skipped := ordinaryPrefix(p[i:])
+				// Once a block contains exceptional data, use the scalar
+				// scanner for the rest of this Write. Repeated bare LFs or
+				// leading dots should not pay for two scans of every line.
+				vectorScan = skipped >= len(p)-i-16
+				end += skipped
+			}
+			for end < len(p) {
+				newline := bytes.IndexByte(p[end:], '\n')
+				if newline < 0 {
+					end = len(p)
+					break
+				}
+				newline += end
+				if newline == i || p[newline-1] != '\r' {
+					end = newline
+					break
+				}
+				end = newline + 1
+				if end < len(p) && p[end] == '.' {
+					break
+				}
+			}
+			if end > i {
+				n, err := d.w.Write(p[i:end])
+				if n > 0 {
+					d.lastByte = p[i+n-1]
+					d.atLineStart = d.lastByte == '\n'
+					i += n
+				}
+				if err != nil {
+					return i, err
+				}
+				if i != end {
+					return i, io.ErrShortWrite
+				}
+				continue
+			}
+		}
 
 		switch {
 		case b == '\n':
 			// Normalise to CRLF. If the previous byte was '\r',
 			// we already wrote '\r', so just write '\n'.
 			if d.lastByte != '\r' {
-				if _, err := d.w.Write([]byte{'\r'}); err != nil {
+				if err := d.writeByte('\r'); err != nil {
 					return i, err
 				}
 			}
-			if _, err := d.w.Write([]byte{'\n'}); err != nil {
+			if err := d.writeByte('\n'); err != nil {
 				return i, err
 			}
 			d.atLineStart = true
@@ -66,7 +115,7 @@ func (d *dotStuffWriter) Write(p []byte) (int, error) {
 			// Write the \r but don't mark line start yet — if the next
 			// byte is '\n' this is a CRLF pair; otherwise it was a lone
 			// CR, which is content, not a line terminator.
-			if _, err := d.w.Write([]byte{'\r'}); err != nil {
+			if err := d.writeByte('\r'); err != nil {
 				return i, err
 			}
 			d.atLineStart = false
@@ -74,19 +123,30 @@ func (d *dotStuffWriter) Write(p []byte) (int, error) {
 		default:
 			// Dot-stuff: if we're at line start and the byte is '.', prepend '.'.
 			if d.atLineStart && b == '.' {
-				if _, err := d.w.Write([]byte{'.'}); err != nil {
+				if err := d.writeByte('.'); err != nil {
 					return i, err
 				}
 			}
-			if _, err := d.w.Write([]byte{b}); err != nil {
+			if err := d.writeByte(b); err != nil {
 				return i, err
 			}
 			d.atLineStart = false
 		}
 
 		d.lastByte = b
+		i++
 	}
 	return len(p), nil
+}
+
+// Reuse storage for inserted bytes instead of allocating once per byte.
+func (d *dotStuffWriter) writeByte(b byte) error {
+	d.scratch[0] = b
+	n, err := d.w.Write(d.scratch[:])
+	if err == nil && n != 1 {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 // Close writes the terminating CRLF (if the last line didn't end with one)

@@ -200,7 +200,7 @@ func (c *Conn) serve() {
 		// other command uses the tokenised args, which are identical to the
 		// previous strings.Fields(line) result.
 		verb, rawArg := splitCommand(line)
-		cmd := strings.ToUpper(verb)
+		cmd := toUpperASCII(verb)
 		args := strings.Fields(rawArg)
 		c.rawArg = rawArg
 
@@ -401,7 +401,7 @@ func (c *Conn) dispatchUnknown(ctx context.Context, cmd string, args []string) b
 // advertisement only; the command stays functional.
 func (c *Conn) capSuppressed(name string) bool {
 	for _, s := range c.server.opts.SuppressedCaps {
-		if strings.EqualFold(s, name) {
+		if equalFoldASCII(s, name) {
 			return true
 		}
 	}
@@ -548,7 +548,7 @@ func (c *Conn) handleAuth(ctx context.Context, args []string) {
 
 	// The library implements the PLAIN exchange only; verify the requested
 	// mechanism is one the session actually advertises (see G7).
-	mech := strings.ToUpper(args[0])
+	mech := toUpperASCII(args[0])
 	if mech != "PLAIN" || !mechanismAdvertised(sasl, "PLAIN") {
 		c.clientError("Unsupported SASL mechanism")
 		return
@@ -1110,6 +1110,51 @@ func splitCommand(line string) (verb, arg string) {
 	return line[:i], line[i+1:]
 }
 
+// toUpperASCII returns s with its ASCII letters upper-cased and every other
+// byte unchanged. Command keywords are case-insensitive over ASCII only (RFC
+// 1939 section 3: "Commands in the POP3 consist of a case-insensitive keyword
+// [...] Keywords and arguments consist of printable ASCII characters"), as are
+// SASL mechanism names (RFC 4422 section 3.1). strings.ToUpper would also map
+// U+0131 (LATIN SMALL LETTER DOTLESS I) to "I" and U+017F (LATIN SMALL LETTER
+// LONG S) to "S", turning a look-alike such as "ſTAT" into a command.
+func toUpperASCII(s string) string {
+	for i := 0; i < len(s); i++ {
+		if 'a' <= s[i] && s[i] <= 'z' {
+			b := []byte(s)
+			for j := i; j < len(b); j++ {
+				if 'a' <= b[j] && b[j] <= 'z' {
+					b[j] -= 'a' - 'A'
+				}
+			}
+			return string(b)
+		}
+	}
+	return s
+}
+
+// equalFoldASCII reports whether s and t are equal when ASCII letters are
+// compared case-insensitively and every other byte exactly. Unlike
+// strings.EqualFold it does not take U+017F (LATIN SMALL LETTER LONG S) for
+// "s" or U+212A (KELVIN SIGN) for "k"; see toUpperASCII.
+func equalFoldASCII(s, t string) bool {
+	if len(s) != len(t) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		a, b := s[i], t[i]
+		if 'a' <= a && a <= 'z' {
+			a -= 'a' - 'A'
+		}
+		if 'a' <= b && b <= 'z' {
+			b -= 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
+}
+
 // sanitizeResponse strips CR and LF from a session-supplied string before it
 // is written into a response line, so a value derived from message data or an
 // upstream server (a UIDL unique-id, a LANG tag, a Session error message)
@@ -1148,7 +1193,7 @@ func parseInt(s string) (int, error) {
 // SASL mechanism list.
 func mechanismAdvertised(sasl SessionSASL, mech string) bool {
 	for _, m := range sasl.AuthenticateMechanisms() {
-		if strings.EqualFold(m, mech) {
+		if equalFoldASCII(m, mech) {
 			return true
 		}
 	}

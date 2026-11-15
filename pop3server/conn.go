@@ -162,7 +162,10 @@ func (c *Conn) serve() {
 			if isTimeout(err) {
 				// Distinguish absolute session timeout from idle timeout.
 				if opts.AbsoluteSessionTimeout > 0 && time.Since(c.startTime) >= opts.AbsoluteSessionTimeout {
-					c.err("[IN-USE] Maximum session duration exceeded")
+					// No response code: [IN-USE] (RFC 2449 section 8.1.2)
+					// says authentication succeeded but the maildrop is
+					// locked, and no RFC 2449/3206 code describes a timeout.
+					c.err("Maximum session duration exceeded")
 					c.writer.Flush()
 					opts.Logger.Info("POP3: absolute session timeout",
 						"duration", time.Since(c.startTime))

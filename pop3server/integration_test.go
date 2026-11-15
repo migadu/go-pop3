@@ -461,12 +461,16 @@ func TestServer_AbsoluteSessionTimeout(t *testing.T) {
 		// Connection closed — expected
 		return
 	}
-	if strings.HasPrefix(line, "-ERR") && strings.Contains(line, "IN-USE") {
-		// Got the expected error
+	// No response code: RFC 2449 section 8.1.2 [IN-USE] says authentication
+	// succeeded but the maildrop is locked, which a timeout is not.
+	if line == absoluteTimeoutNotice {
 		return
 	}
-	t.Fatalf("expected -ERR [IN-USE] or connection close, got %q", line)
+	t.Fatalf("expected %q or connection close, got %q", absoluteTimeoutNotice, line)
 }
+
+// absoluteTimeoutNotice is the line sent when AbsoluteSessionTimeout expires.
+const absoluteTimeoutNotice = "-ERR Maximum session duration exceeded\r\n"
 
 func TestServer_BenignErrorsDoNotDisconnect(t *testing.T) {
 	// Verify that session method errors (e.g., "no such message") do NOT

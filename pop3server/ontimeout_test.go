@@ -108,8 +108,8 @@ func TestServer_OnTimeoutHookAbsolute(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	line, err := rw.ReadString('\n')
-	if err == nil && (!strings.HasPrefix(line, "-ERR") || !strings.Contains(line, "IN-USE")) {
-		t.Fatalf("expected -ERR [IN-USE] or connection close, got %q", line)
+	if err == nil && line != absoluteTimeoutNotice {
+		t.Fatalf("expected %q or connection close, got %q", absoluteTimeoutNotice, line)
 	}
 
 	if kinds := rec.snapshot(); len(kinds) != 1 || kinds[0] != pop3server.TimeoutAbsolute {

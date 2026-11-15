@@ -42,7 +42,7 @@ func New(opts Options) *Server {
 //   - For a hard limit that stops accepting past N connections, wrap the
 //     listener with golang.org/x/net/netutil.LimitListener(ln, N); the library
 //     closes each connection on teardown, which releases its slot.
-//   - For a graceful, per-connection decision (e.g. a "-ERR [IN-USE] Too many
+//   - For a graceful, per-connection decision (e.g. a "-ERR [SYS/TEMP] Too many
 //     connections" banner), enforce the limit in Options.NewSession and return
 //     a *pop3server.Error — the connection is rejected with that banner and
 //     closed.
@@ -204,7 +204,7 @@ func (s *Server) handleConn(netConn net.Conn) {
 		s.opts.Logger.Warn("POP3: session creation failed",
 			"remote", netConn.RemoteAddr(), "error", err)
 		// A limiter can steer the rejection banner by returning an *Error,
-		// e.g. -ERR [IN-USE] Too many connections (see G5).
+		// e.g. -ERR [SYS/TEMP] Too many connections (see G5).
 		msg := s.opts.RejectMessage
 		var perr *Error
 		if errors.As(err, &perr) {

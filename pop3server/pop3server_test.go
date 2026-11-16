@@ -303,6 +303,23 @@ func TestDecodeSASLPlain(t *testing.T) {
 			encoded: "not-valid-base64!!!",
 			wantErr: true,
 		},
+		// base64.StdEncoding skips CR and LF; RFC 5034 section 4 requires
+		// them refused like any other character outside the alphabet.
+		{
+			name:    "CR inside",
+			encoded: "AGFs\raWNlAHNlY3JldA==",
+			wantErr: true,
+		},
+		{
+			name:    "LF inside",
+			encoded: "AGFs\naWNlAHNlY3JldA==",
+			wantErr: true,
+		},
+		{
+			name:    "CR at the end",
+			encoded: "AGFsaWNlAHNlY3JldA==\r",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

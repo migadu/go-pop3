@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // connState represents the POP3 session state (RFC 1939 §4).
@@ -42,6 +43,12 @@ type Conn struct {
 	// whitespace preserved). handlePass reads it so a password's embedded
 	// whitespace survives; other handlers use the tokenised args slice.
 	rawArg string
+
+	// line holds the current command line as read: its line terminator
+	// removed, nothing trimmed. handleAuth takes the initial response from
+	// it, so that whitespace or a CR around the response is refused rather
+	// than trimmed away.
+	line string
 
 	// Error tracking
 	errorCount int
@@ -189,6 +196,7 @@ func (c *Conn) serve() {
 			return
 		}
 
+		c.line = line
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -558,7 +566,7 @@ func (c *Conn) handleAuth(ctx context.Context, args []string) {
 	// continuation.
 	var encoded string
 	if len(args) > 1 {
-		encoded = args[1]
+		encoded = initialResponse(c.line)
 	} else {
 		// Send continuation prompt.
 		c.writer.WriteString("+ \r\n")
@@ -578,7 +586,9 @@ func (c *Conn) handleAuth(ctx context.Context, args []string) {
 			c.closePending = true
 			return
 		}
-		encoded = strings.TrimSpace(line)
+		// readLine removed the line terminator; any other whitespace is
+		// part of the response, which decodeSASLPlain refuses.
+		encoded = line
 	}
 
 	// Abort
@@ -1200,7 +1210,25 @@ func mechanismAdvertised(sasl SessionSASL, mech string) bool {
 	return false
 }
 
+// initialResponse returns the initial response on an AUTH command line: the
+// text after the mechanism and the delimiter that follows it ("AUTH" SP
+// sasl-mech [SP initial-response], RFC 5034 section 5), with nothing trimmed
+// or split off. A space, tab or CR in or around the response is thereby left
+// in it, for decodeSASLPlain to refuse.
+func initialResponse(line string) string {
+	_, rest := splitCommand(strings.TrimLeftFunc(line, unicode.IsSpace))
+	_, response := splitCommand(strings.TrimLeft(rest, " \t"))
+	return response
+}
+
 func decodeSASLPlain(encoded string) (identity, username, password string, err error) {
+	// base64.StdEncoding refuses every character outside the base64
+	// alphabet except CR and LF, which it skips wherever they occur. RFC
+	// 5034 section 4: "servers and clients MUST reject (and not ignore) any
+	// character not explicitly allowed by the Base64 alphabet".
+	if strings.ContainsAny(encoded, "\r\n") {
+		return "", "", "", errors.New("CR or LF in SASL response")
+	}
 	decoded, decodeErr := base64.StdEncoding.DecodeString(encoded)
 	if decodeErr != nil {
 		return "", "", "", decodeErr

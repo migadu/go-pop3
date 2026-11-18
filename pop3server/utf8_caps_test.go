@@ -1,7 +1,9 @@
 package pop3server_test
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"net"
 	"strings"
 	"testing"
@@ -270,5 +272,62 @@ func TestServer_UTF8UserCapability(t *testing.T) {
 				t.Fatalf("CAPA UTF8 lines = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestServer_UTF8UserOnlyWhenUserOffered: the USER argument says the USER and
+// PASS commands accept UTF-8 (RFC 6856 §2.2), so it is advertised only when
+// login is: on a plaintext connection without InsecureAuth, CAPA lists neither
+// USER nor SASL, and UTF8 goes out bare. After STLS it carries the argument.
+func TestServer_UTF8UserOnlyWhenUserOffered(t *testing.T) {
+	session := &mockSessionUTF8{mockSession: newMockSession()}
+	addr, cleanup := startServerWithOpts(t, pop3server.Options{
+		NewSession: func(conn *pop3server.Conn) (pop3server.Session, error) {
+			return session, nil
+		},
+		TLSConfig: serverTLSConfig(t),
+		UTF8User:  true,
+	})
+	defer cleanup()
+
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	utf8Lines := func(rw *bufio.ReadWriter) []string {
+		t.Helper()
+		if resp := sendCmd(t, rw, "CAPA"); !strings.HasPrefix(resp, "+OK") {
+			t.Fatalf("CAPA: %s", resp)
+		}
+		var lines []string
+		for _, c := range readMultiLine(t, rw) {
+			if f := strings.Fields(c); len(f) > 0 && strings.EqualFold(f[0], "UTF8") {
+				lines = append(lines, c)
+			}
+		}
+		return lines
+	}
+
+	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	if greeting, err := rw.ReadString('\n'); err != nil || !strings.HasPrefix(greeting, "+OK") {
+		t.Fatalf("greeting = %q, %v", greeting, err)
+	}
+	if got := utf8Lines(rw); strings.Join(got, "|") != "UTF8" {
+		t.Errorf("CAPA UTF8 lines before STLS = %q, want [\"UTF8\"]", got)
+	}
+
+	if resp := sendCmd(t, rw, "STLS"); !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("STLS: %s", resp)
+	}
+	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+	rw = bufio.NewReadWriter(bufio.NewReader(tlsConn), bufio.NewWriter(tlsConn))
+	if got := utf8Lines(rw); strings.Join(got, "|") != "UTF8 USER" {
+		t.Errorf("CAPA UTF8 lines after STLS = %q, want [\"UTF8 USER\"]", got)
 	}
 }

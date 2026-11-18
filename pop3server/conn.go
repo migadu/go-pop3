@@ -462,7 +462,11 @@ func (c *Conn) handleCapa() {
 		c.writeCap("LANG")
 	}
 	if _, ok := c.session.(SessionUTF8); ok {
-		c.writeCap("UTF8")
+		if opts.UTF8User {
+			c.writeCap("UTF8", "USER") // RFC 6856 §2.2
+		} else {
+			c.writeCap("UTF8")
+		}
 	}
 
 	// Custom capabilities from server options

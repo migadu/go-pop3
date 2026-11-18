@@ -80,7 +80,8 @@ type Options struct {
 	//   - STLS          (when TLSConfig is set and connection is plaintext)
 	//   - SASL <mechs>  (when session implements SessionSASL)
 	//   - LANG          (when session implements SessionLang)
-	//   - UTF8          (when session implements SessionUTF8)
+	//   - UTF8          (when session implements SessionUTF8; "UTF8 USER"
+	//                    with UTF8User)
 	//
 	// Use this for implementation-specific capabilities (e.g., EXPIRE,
 	// AUTH-RESP-CODE, IMPLEMENTATION).
@@ -95,6 +96,17 @@ type Options struct {
 	// the AUTHORIZATION state) and aborts the whole mail download when the
 	// post-auth relay target rejects it.
 	SuppressedCaps []string
+
+	// UTF8User adds the USER argument to the UTF8 capability, so CAPA says
+	// "UTF8 USER" instead of "UTF8" (RFC 6856 §2.2): the server accepts
+	// UTF-8 user names and passwords, and a client may send them with USER
+	// and PASS before or without the UTF8 command. It has no effect unless
+	// the session implements SessionUTF8, and SuppressedCaps entry "UTF8"
+	// still hides the line. RFC 6856 §2.2 requires such a server to reject a
+	// user name or password that is not valid UTF-8 (RFC 3629); the library
+	// passes credentials through as sent, so the session's Login must check.
+	// Default: false (a bare "UTF8").
+	UTF8User bool
 
 	// IdleTimeout is the maximum time the server waits for a command
 	// from the client before disconnecting. RFC 1939 §3 mandates at

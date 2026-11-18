@@ -99,7 +99,11 @@ Key contracts:
 
 `pop3mem/store.go` is a complete reference implementation. Implement
 `SessionSASL`, `SessionLang`, or `SessionUTF8` alongside `Session` to have the
-library advertise and handle those extensions.
+library advertise and handle those extensions. Set `Options.UTF8User` to
+advertise `UTF8 USER` (RFC 6856 §2.2) when `Login` accepts UTF-8 user names and
+passwords; `Login` must then reject ones that are not valid UTF-8. The argument
+goes with `USER` itself: before `STLS` without `InsecureAuth`, CAPA has a bare
+`UTF8`.
 
 ## Error handling
 

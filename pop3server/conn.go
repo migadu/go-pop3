@@ -462,7 +462,13 @@ func (c *Conn) handleCapa() {
 		c.writeCap("LANG")
 	}
 	if _, ok := c.session.(SessionUTF8); ok {
-		c.writeCap("UTF8")
+		// The USER argument says USER and PASS accept UTF-8 (RFC 6856
+		// §2.2), so it goes with them: not before STLS without InsecureAuth.
+		if opts.UTF8User && authAllowed {
+			c.writeCap("UTF8", "USER")
+		} else {
+			c.writeCap("UTF8")
+		}
 	}
 
 	// Custom capabilities from server options
